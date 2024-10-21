@@ -3,9 +3,12 @@ package alipayslim
 
 import (
 	"context"
+	"crypto"
 	"crypto/md5"
 	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"encoding/xml"
@@ -65,6 +68,80 @@ func (c *Client) MustWithRSAKey(key string) *Client {
 func (c *Client) WithDebug(debug bool) *Client {
 	c.debug = debug
 	return c
+}
+
+// PayParams is the parameters for the Alipay pay.
+type PayParams struct {
+	client *Client
+	Data   map[string]string
+}
+
+// WithBody sets the body and returns the PayParams.
+func (p *PayParams) WithBody(body string) *PayParams {
+	p.Data["body"] = body
+	return p
+}
+
+// WithNotifyUrl sets the notify URL and returns the PayParams.
+func (p *PayParams) WithNotifyUrl(notifyUrl string) *PayParams {
+	p.Data["notify_url"] = notifyUrl
+	return p
+}
+
+// WithOutTradeNo sets the out trade no and returns the PayParams.
+func (p *PayParams) WithOutTradeNo(tradeNo string) *PayParams {
+	p.Data["out_trade_no"] = tradeNo
+	return p
+}
+
+// WithTotalFee sets the total fee and returns the PayParams.
+func (p *PayParams) WithTotalFee(totalFee string) *PayParams {
+	p.Data["total_fee"] = totalFee
+	return p
+}
+
+// WithReferUrl sets the refer URL and returns the PayParams.
+func (p *PayParams) WithReferUrl(referUrl string) *PayParams {
+	p.Data["refer_url"] = referUrl
+	return p
+}
+
+// WithSubject sets the subject and returns the PayParams.
+func (p *PayParams) WithSubject(subject string) *PayParams {
+	p.Data["subject"] = subject
+	return p
+}
+
+// OrderString returns the order string for the Alipay HK app pay.
+func (p *PayParams) OrderString() (string, error) {
+	delete(p.Data, "sign_type")
+	delete(p.Data, "sign")
+	signature, err := signWithRSA(p.client.rsaKey, paramsToString(p.Data))
+	if err != nil {
+		return "", err
+	}
+	p.Data["sign_type"] = "RSA"
+	p.Data["sign"] = url.QueryEscape(signature)
+	return paramsToString(p.Data), nil
+}
+
+// AlipayHKAppPayParams returns a new basic parameters for the AlipayHK app pay.
+func (c *Client) AlipayHKAppPayParams() *PayParams {
+	return &PayParams{
+		client: c,
+		Data: map[string]string{
+			"service":        "mobile.securitypay.pay",
+			"_input_charset": "utf-8",
+			"partner":        c.appId,
+			"seller_id":      c.appId,
+			"payment_type":   "1",
+			"currency":       "HKD",
+			"forex_biz":      "FP",
+			"product_code":   "NEW_WAP_OVERSEAS_SELLER",
+			"payment_inst":   "ALIPAYHK",
+			"it_b_pay":       "10m",
+		},
+	}
 }
 
 // xmlResponse is the response of the alipay API.
@@ -202,7 +279,7 @@ func (c *Client) SingleTradeQuery(ctx context.Context, tradeNo string) (*TradeQu
 	}
 	paramString := paramsToString(params)
 	signature := signWithMd5(c.md5Key, paramString)
-	paramString += "&sign_type=MD5&sign=" + url.QueryEscape(signature)
+	paramString += "&sign_type=MD5&sign=" + signature
 	url := "https://intlmapi.alipay.com/gateway.do?" + paramString
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -279,4 +356,13 @@ func parsePrivateKey(privateKeyPEM string) (*rsa.PrivateKey, error) {
 func signWithMd5(key, data string) string {
 	hashed := md5.Sum([]byte(data + key))
 	return hex.EncodeToString(hashed[:])
+}
+
+func signWithRSA(privateKey *rsa.PrivateKey, data string) (string, error) {
+	hashed := sha1.Sum([]byte(data))
+	signature, err := rsa.SignPKCS1v15(nil, privateKey, crypto.SHA1, hashed[:])
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(signature), nil
 }
